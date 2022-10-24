@@ -1,0 +1,649 @@
+---
+title: "Ames Housing Dataset Project"
+output:
+  word_document: default
+  html_document: default
+date: '2022-04-23'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Problem Identification
+
+This data set provides information on Iowa houses sale prices and how 79 exploratory variables can be helpful in price negotiation. 
+
+It might seem there are a lot of missing values in the data but having a closer look, understanding how they are collected, and why there are missing values for certain houses, can help fill in those variables. 
+
+In general, five data science problems are addressed here: 
+
+1. Which Season Corresponds to most of the sales?
+
+In the data there is a variable named MoSold which is based on the Gregorian calendar. How can we interpret this variable to determine seasons with higher sale prices. 
+
+2. How old were the houses when they were sold?
+
+We can also determine the age of the house when it was being sold by simply performing some calculations over one or two other variables. We can see that on average when do houses often go on sale. 
+
+3. Which neighboorhoods correspond to more expensive houses?
+
+There are 25 neighborhoods in Ames, Iowa. Which of them correspond to more expensive sale prices? 
+
+4. Which zones (MSZoning) correspond to more expensive sales
+
+The city can be divided into multiple zones (Floating Village Residentials, High Density Residentials, 
+Medium Density Residentials, etc.). Which of these zones correspond to more expensive houses? 
+
+5. How does house style affect sale price?
+
+Houses can have different styles. How does this affect the price of it?
+
+All these questions are answered later on.
+
+## Data Preprocessing
+
+We first need to require some libraries that will be needed further down the process. 
+
+```{r echo = T, results = FALSE}
+require(ggplot2) # for data visualization
+require(stringr) #extracting string patterns
+require(Matrix) # matrix transformations
+require(GGally) # pair plots
+require(Metrics) # rmse
+require(dplyr) # easier work with data
+require(corrplot) # correlation plot
+```
+
+Now we can import our train and test data sets. Since our data sets have headers, we set `header=TRUE`. 
+
+```{r}
+train <- read.csv('train.csv', header=TRUE)
+test <- read.csv('test.csv', header=TRUE)
+```
+
+Now we can start cleaning our data. We first need to check for missing values. 
+
+```{r}
+na.cols <- which(colSums(is.na(train)) > 0)
+sort(colSums(sapply(train[na.cols], is.na)), decreasing = TRUE)
+```
+
+Here you can see all the columns in our train data that have missing values. 
+
+In order to view these columns better we define a function to better plot categorical variables that have missing values. These plots can be helpful when we want to impute missing values. 
+
+```{r}
+# helper function for plotting categoric data for easier data visualization
+plot.categoric <- function(cols, df){
+  for (col in cols) {
+    order.cols <- names(sort(table(df[,col]), decreasing = TRUE))
+    
+    num.plot <- qplot(df[,col]) +
+      geom_bar(fill = 'cornflowerblue') +
+      geom_text(aes(label = ..count..), stat='count', vjust=-0.5) +
+      theme_minimal() +
+      scale_y_continuous(limits = c(0,max(table(df[,col]))*1.1)) +
+      scale_x_discrete(limits = order.cols) +
+      xlab(col) +
+      theme(axis.text.x = element_text(angle = 30, size=12))
+    
+    print(num.plot)
+  }
+}
+```
+
+We can now start evaluating variables that have missing values. 
+
+### PoolQC : Pool Quality
+
+This variable corresponds to the quality of the pool in houses. 
+
+```{r}
+plot.categoric('PoolQC', train)
+```
+
+Based on the plot and its warnings, we can see that more than 90% of the data in this variable is missing. But this is not due to randomness. Maybe most houses did not have any pool and that's the reason it is missing. 
+
+We can confirm that by checking that if they have a value greater than 0 for Pool Area. 
+
+```{r}
+train[(train$PoolArea > 0) & is.na(train$PoolQC), c('PoolArea', 'PoolQC')]
+```
+
+As you can see there are NO houses who have a pool but the quality of it is missing. Therefore, those houses don't have a pool. We can now convert those missing values to a value other than that such as "None"
+
+```{r}
+train$PoolQC[is.na(train$PoolQC)] = 'None'
+```
+
+### MiscFeature
+
+This variable corresponds to miscellaneous features of the houses that are not separate variables like having an elevator, 2nd garage, tennis cours, etc. 
+
+```{r}
+plot.categoric('MiscFeature', train)
+```
+As you can see on the plot. Most houses don't have any miscellaneous feature and therefore it is interpreted as missing values. We can convert those missing values to a character string such as 'None' as we did with the Pool Quality variable. But before that, we need to confirm that no missing value is at random: 
+
+```{r}
+train[(train$MiscVal > 0) & is.na(train$MiscFeature), c('MiscVal', 'MiscFeature')]
+train$MiscFeature[is.na(train$MiscFeature)] = 'None'
+```
+
+We can do the same process for the remaining variables that have missing values. 
+
+### Alley : Type of Alley Access to Property
+
+```{r}
+plot.categoric('Alley', train)
+# There are 1369 missing values for alley access which might be because of having no access 
+# to an alley. therefore we can similarly set 'None' for missing values. 
+train$Alley[is.na(train$Alley)] = 'None'
+```
+
+### Fence
+
+```{r}
+plot.categoric('Fence', train)
+
+# Fence is also a similar case. Missing values indicate no fences.
+train$Fence[is.na(train$Fence)] = 'None'
+```
+
+### FireplaceQu: Fireplace Quality
+
+```{r}
+plot.categoric('FireplaceQu', train)
+train[(train$Fireplaces > 0) & is.na(train$FireplaceQu), c('Fireplaces', 'FireplaceQu')]
+
+# all missing values indicate no fireplace
+train$FireplaceQu[is.na(train$FireplaceQu)] = 'None'
+```
+
+Now we check variables that are related to garage. 
+
+### GarageType - GarageYrBlt - GarageFinish - GarageQual - GarageCond
+we first evaluate GarageYrBlt. It seems reasonable that most houses would build a garage when the house itself was built. We can check this by seeing how many houses were built the same year their garage was built.
+
+```{r}
+length(which(train$GarageYrBlt == train$YearBuilt))
+```
+
+1089 of the 1460 houses have same year for for GarageYrBlt and YearBuilt. Lets replace any of the NA’s for GarageYrBlt with the year from YearBuilt.
+
+```{r}
+idx <- which(is.na(train$GarageYrBlt))
+train[idx, 'GarageYrBlt'] <- train[idx, 'YearBuilt']
+```
+
+For the rest of the houses we can check to see that if the NA’s recorded also have 0 GarageArea and 0 GarageCars. If they do we can fill in their missing values with ‘None’ since having 0 area and 0 cars in their garage will imply that they do not have any at all.
+
+```{r}
+garage.cols <- c('GarageArea', 'GarageCars', 'GarageQual', 'GarageFinish', 'GarageCond', 'GarageType')
+train[is.na(train$GarageCond),garage.cols]
+```
+
+As you can see all houses with missing values in the last 4 variables have 0 for garage area and garage cars. Now we can fill in any missing numeric values with 0 and categoric with ‘None’ since these houses recorded having 0 area and 0 car capacity in their garage.
+
+```{r}
+for (col in garage.cols){
+  if (sapply(train[col], is.numeric) == TRUE){
+    train[sapply(train[col], is.na), col] = 0
+  }
+  else{
+    train[sapply(train[col], is.na), col] = 'None'
+  }
+}
+```
+
+We can check if there is any missing values still in the data for garage columns
+
+```{r}
+train[is.na(train$GarageCond),garage.cols]
+```
+
+### Electrical
+```{r}
+plot.categoric('Electrical', train)
+```
+
+We impute the only missing value with the most occuring value 'SBrkr'
+```{r}
+train$Electrical[is.na(train$Electrical)] = 'SBrkr'
+```
+
+### BsmtExposure - BsmtFinType2 - BsmtQual - BsmtCond - BsmtFinType1
+
+Now we check variables with missing values related to basement. 
+
+```{r}
+bsmt.cols <- names(train)[sapply(names(train), function(x) str_detect(x, 'Bsmt'))]
+train[is.na(train$BsmtExposure),bsmt.cols]
+```
+
+Almost all of the missing values for each categoric basement feature comes from houses with 0 on each features corresponding to area. Row 949 is the only row that has a missing value in BsmtExposure that needs to be filled with the mode which is "No"
+
+```{r}
+plot.categoric('BsmtExposure', train)
+train[949, 'BsmtExposure'] = 'No'
+```
+
+We can fill in the rest of these values with ‘None’ since these houses certainly don’t have basements.
+
+```{r}
+for (col in bsmt.cols){
+  if (sapply(train[col], is.numeric) == TRUE){
+    train[sapply(train[col], is.na),col] = 0
+  }
+  else{
+    train[sapply(train[col],is.na),col] = 'None'
+  }
+}
+```
+
+### MsnVnrType - MsnVnrArea 
+
+There are 8 missing values for both of these columns. We can see if they come from the same houses
+
+```{r}
+train[(is.na(train$MasVnrType)) | (is.na(train$MasVnrArea)), c('MasVnrType', 'MasVnrArea')]
+```
+
+As you can see they are the same. So we can set None for type and 0 for Area.
+
+```{r}
+train$MasVnrType[is.na(train$MasVnrType)] = 'None'
+train$MasVnrArea[is.na(train$MasVnrArea)] = 0
+```
+
+### Lot Frontage : Linear Feet of Street Connected to Property
+
+The area of each street connected to the house property is most likely going to have a similar area to other houses in its neighborhood. We can group by each neighborhood and take the median of each LotFrontage and fill the missing values of each LotFrontage based on what neighborhood the house comes from.
+
+```{r}
+lot.by.nbrh <- train[,c('Neighborhood','LotFrontage')] %>%
+  group_by(Neighborhood) %>%
+  summarise(median = median(LotFrontage, na.rm = TRUE))
+lot.by.nbrh
+
+idx = which(is.na(train$LotFrontage))
+
+for (i in idx){
+  lot.median <- lot.by.nbrh[lot.by.nbrh$Neighborhood == train$Neighborhood[i],'median']
+  train[i,'LotFrontage'] <- lot.median[[1]]
+}
+```
+
+## Exploratory Data Analysis
+
+Now we are going to see how numerical features correalte with the response variable SalePrice. First we filter out the numerical features, then we are going to select features that have a correlation higher than 0.5 with SalePrice. After that, we draw a correlation heatmap to see how those highly correlated variables interact with SalePrice and with each other.
+
+```{r}
+num_features <- names(which(sapply(train, is.numeric)))
+
+train_num <- train[,num_features]
+
+# Correlation Heat map
+corr.mat <- cor(train_num)
+
+corr.SalePrice <- as.matrix(sort(corr.mat[,'SalePrice'], decreasing = TRUE))
+corr.idx <- names(which(apply(corr.SalePrice, 1, function(x) (x > 0.5 | x < -0.5))))
+
+corrplot::corrplot(as.matrix(corr.mat[corr.idx,corr.idx]), type = 'upper', method='color',
+         addCoef.col = 'black', tl.cex = .7,cl.cex = .7, number.cex=.7)
+```
+
+Here we can see top 10 variables that have high correlation with Sale Price. Although we can see that some variables are highly correlated with each other too. One way to solve this issue is to select one of them. From the correlation plot we intend to select these variables:
+```{r}
+hcor.features <- c('SalePrice','OverallQual', 'GrLivArea', 'GarageCars','X1stFlrSF', 'YearBuilt',
+                   'YearRemodAdd')
+
+train.hcor <- train_num[,hcor.features]
+```
+
+### Outliers
+First we plot all paired plots of the afformentioned variables.
+```{r}
+# All in One to grasp a general overview
+ggpairs(train.hcor)
+```
+
+For ggpairs we can define or use a function to plot in the lower or upper half of the ggpairs plot. 
+```{r}
+f.plt <- function(data, mapping, ...){
+  plt <- ggplot(data=data, mapping=mapping) + 
+    geom_point(color='steelblue4')
+  
+  return(plt)
+}
+```
+
+1. SalePrice vs Overall Qual
+
+```{r}
+ggpairs(train.hcor, hcor.features[c(1,2)], lower = list(continuous = f.plt))
+```
+
+As you can see there are two houses that have high overall quality (10) but also have low prices (below 200000). We can remove those outliers to see if we get better results. 
+```{r}
+idx.oq <- which((train.hcor$SalePrice < 2e05)&(train.hcor$OverallQual == 10))
+train.hcor <- train.hcor[-idx.oq,]
+ggpairs(train.hcor, hcor.features[c(1,2)], lower = list(continuous = f.plt))
+```
+
+2. SalePrice vs GrLivArea 
+```{r}
+ggpairs(train.hcor, hcor.features[c(1,3)], lower = list(continuous = f.plt))
+```
+We can see that all points are toward the generalization that bigger GrLivArea leads to higher sale prices. Therefore there is no need to remove any observation from the data. 
+
+3. SalePrice vs Garage Cars
+```{r}
+ggpairs(train.hcor, hcor.features[c(1,4)], lower = list(continuous = f.plt))
+```
+
+
+We can see 5 houses that have 4 car spaces in their garage but have low prices. We can also see 2 houses that have 3 car spaces but a lot higher sale prices
+
+```{r}
+idx.gc <- which((train.hcor$GarageCars == 4) | (train.hcor$SalePrice > 7e05))
+train.hcor <- train.hcor[-idx.gc,]
+ggpairs(train.hcor, hcor.features[c(1,4)], lower = list(continuous = f.plt))
+```
+
+4. SalePrice vs X1stFlrSF 
+```{r}
+ggpairs(train.hcor, hcor.features[c(1,5)], lower = list(continuous = f.plt))
+```
+We can see there are no outliers that requires considering. 
+
+There are no outliers for the next two variables (since they are years). But we plot their spread regardless to see how it is. 
+
+5. SalePrice vs YearBuilt
+
+```{r}
+ggpairs(train.hcor, hcor.features[c(1,6)], lower = list(continuous = f.plt))
+```
+
+6. SalePrice vs YearRemodAdd
+```{r}
+ggpairs(train.hcor, hcor.features[c(1,7)], lower = list(continuous = f.plt))
+```
+
+
+## Modeling
+
+Now we can start modeling our data. But before that we need to transform our data. Currently the SalePrice variable is non-negative. We can easily transform it with the log function to make it unbounded. 
+
+```{r}
+train_new <- train.hcor %>% 
+  mutate(log_SalePrice = log(SalePrice+1)) %>% 
+  select(-SalePrice)
+```
+
+Our first model only includes the numeric variables that we previously chose based on their high correlation with the SalePrice variable. 
+```{r}
+lm.fit <- lm(log_SalePrice~., data=train_new)
+summary(lm.fit)
+```
+
+As you can see, All coefficients are significant. And we have an adjusted R-squared of 0.8309.
+
+## Prediction
+Now we can start prediction on the test set. But before that, we need to see if there are missing values in this data set. 
+
+```{r}
+na.cols <- which(colSums(is.na(test)) > 0)
+sort(colSums(sapply(test[na.cols], is.na)), decreasing = TRUE)
+```
+
+Right now we only are working with numeric variables that we selected in `hcor.features`. From those variables, only `GarageCars` has 1 missing value in the test set that we are going to adjust. 
+
+We first find the index of that missing value and then set its `GarageCars` value to the mode of same variable in the train set.
+```{r}
+na.idx <- which(is.na(test$GarageCars))
+table(train.hcor$GarageCars) # 2 is the mode
+test[na.idx,'GarageCars'] <- 2
+```
+
+Now we only select those variables needed to be in our model. And then transform the response variable in the test set the same way we transformed in train set.
+
+```{r}
+test_ <- test[,hcor.features]
+test_new <- test_ %>% 
+  mutate(log_SalePrice = log(SalePrice+1)) %>% 
+  select(-SalePrice)
+```
+
+Now we can do the prediction itself by using `predict.lm`. We then use the `rmse` function from the `Metrics` library to calculate the root mean squared error for our prediction. 
+
+```{r}
+sale.pred <- predict.lm(lm.fit, newdata = test_new)
+
+rmse1 <- Metrics::rmse(test_new$log_SalePrice, sale.pred)
+rmse1
+```
+
+## Residual Plots
+
+```{r}
+#get list of residuals 
+res <- resid(lm.fit)
+
+# residuals vs fitted model
+ggplot(mapping=aes(x=fitted(lm.fit), y=res)) + 
+  geom_point(color='red4', alpha=0.9)
+
+# Q-Q plot
+ggplot(mapping = aes(sample=res))+
+  stat_qq(color='red4')+
+  stat_qq_line()
+
+# Density plot
+ggplot(mapping = aes(x = res)) + 
+  geom_density(color= 'darkblue', fill='lightblue')
+```
+
+## 2nd Model
+
+For our 2nd model we are going to create some new variables based on some of the categorical variables in the data. But first we need some exploratory analysis on them. Before that we need to remove the outlier observations from our initial train data in order to use it again. 
+
+```{r}
+train <- train[-idx.oq,]
+# since indexing changes after removing observations, we need to separate them.
+train <- train[-idx.gc,]
+```
+
+
+### 1: Which Season Corresponds to most of the sales?
+```{r}
+ggplot(train, aes(x=MoSold)) +
+  geom_bar(fill = 'cornflowerblue') +
+  geom_text(aes(label=..count..), stat='count', vjust = -.5) +
+  theme_minimal() +
+  scale_x_continuous(breaks = 1:12)
+```
+
+
+As you can see most of the sales are in months 5, 6, and 7, which correspond to May, June, and July (the last month of spring and the first two months of summer). Therefore, Summer in general corresponds to most of the sales. We can create a dummy variable that indicates if the sale has occured in months 5, 6, or 7. 
+
+```{r}
+train['best_months'] <- (train$MoSold %in% c(5,6,7)) * 1
+# same thing happens for test
+test['best_months'] <- (test$MoSold %in% c(5,6,7)) * 1
+```
+
+### 2: How old were the houses when they were sold
+```{r}
+train %>% mutate(SaleAge = YrSold - YearBuilt) %>% 
+  ggplot(aes(x = SaleAge)) + 
+  geom_histogram(fill = 'cornflowerblue', color='white',binwidth=10) + 
+  scale_x_continuous() +
+  theme_minimal()
+```
+
+As you can see, most houses are sold within the first 30 years. 
+
+### 3: Which neighboorhoods correspond to more expensive houses?
+
+```{r}
+train %>% group_by(Neighborhood) %>% 
+  summarise(MeanSalePrice = mean(SalePrice)) %>%
+  arrange(MeanSalePrice) %>%
+  mutate(nbrh.sorted = factor(Neighborhood, levels=Neighborhood)) %>%
+  ggplot(aes(x = nbrh.sorted, y=MeanSalePrice)) +
+  geom_point(color='cornflowerblue', size=3) + 
+  theme_minimal() +
+  labs(x='Neighborhood', y='Mean Sale Price') +
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=45))
+```
+
+As you can see from the plot the top three neighborhoods based on houses sale prices are NoRidge, NridgHt, and StoneBr with average sale prices over than 300000. 
+
+### 4: Which zones (MSZoning) correspond to more expensive sales
+
+```{r}
+train %>% group_by(MSZoning) %>%
+  summarise(MeanSalePrice = mean(SalePrice)) %>% 
+  arrange(MeanSalePrice) %>%
+  mutate(zn.sorted = factor(MSZoning, levels=MSZoning)) %>%
+  ggplot(aes(x = zn.sorted, y=MeanSalePrice)) +
+  geom_point(color='cornflowerblue', size=3) + 
+  theme_minimal() +
+  labs(x='Zone', y='Mean Sale Price') +
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=45))
+```
+As you can see floating village residentials and low density residentials are more expensive than the other groups which is kind of expected.
+
+We can create a dummy variable for these 2 types of residentials:
+
+```{r}
+train['HighZone'] <- 0
+train$HighZone[train$MSZoning %in% c('FV', 'RL')] = 1
+
+test['HighZone'] <- 0
+test$HighZone[test$MSZoning %in% c('FV', 'RL')] = 1
+```
+
+### 5: How does house style affect sale price?
+
+```{r}
+train %>% group_by(HouseStyle) %>%
+  summarise(MeanSalePrice = mean(SalePrice)) %>% 
+  arrange(MeanSalePrice) %>%
+  mutate(stl.sorted = factor(HouseStyle, levels=HouseStyle)) %>%
+  ggplot(aes(x = stl.sorted, y=MeanSalePrice)) +
+  geom_point(color='cornflowerblue', size=3) + 
+  theme_minimal() +
+  labs(x='House Style', y='Mean Sale Price') +
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=45))
+```
+
+
+As you can see 2.5 story with finished 2nd level and 2 story houses are more expensive. We can create a dummy variable for these two styles.
+
+```{r}
+train['HighStyle'] <- 0
+train$HighStyle[train$HouseStyle %in% c('2Story', '2.5Fin')] = 1
+
+test['HighStyle'] <- 0
+test$HighStyle[test$HouseStyle %in% c('2Story', '2.5Fin')] = 1
+```
+
+Now we can add our dummy variables to our model to see how they affect the results.
+
+```{r}
+train_new <- train_new %>%
+  mutate(
+    best_months=train$best_months,
+    HighZone=train$HighZone,
+    HighStyle=train$HighStyle
+  )
+
+test_new <- test_new %>%
+  mutate(
+    best_months=test$best_months,
+    HighZone=test$HighZone,
+    HighStyle=test$HighStyle
+  )
+```
+
+### Modeling: Part 2
+Now we can use our new data to build a linear regression model, predict the sale prices on the test set and calculate RMSE of our estimations and predictions. 
+```{r}
+lm.fit2 <- lm(log_SalePrice~., data=train_new)
+summary(lm.fit2)
+
+sale.pred2 <- predict.lm(lm.fit2, newdata = test_new)
+
+rmse2 <- Metrics::rmse(test_new$log_SalePrice, sale.pred2)
+```
+
+
+
+### Residuals plot for the second model
+```{r}
+
+#get list of residuals 
+res2 <- resid(lm.fit2)
+
+# residuals vs fitted model
+ggplot(mapping=aes(x=fitted(lm.fit2), y=res2)) + 
+  geom_point(color='red4', alpha=0.9)
+
+# Q-Q plot
+ggplot(mapping = aes(sample=res2))+
+  stat_qq(color='red4')+
+  stat_qq_line()
+
+# Density plot
+ggplot(mapping = aes(x = res2)) + 
+  geom_density(color= 'darkblue', fill='lightblue')
+```
+
+## Recommendations and final conclusions
+From our analysis, we understood that:
+1. Not all missing values are at random. We have to gain domain expertise of each variable to actually know what have happened that led to those missing values. 
+
+2. We have found that most of the sales occur in the months May, June, and July, which are the last month of Spring and the 2 first months of Summer.
+
+3. We have found that most houses are sold at most after 30 years from their construction. Although there were some houses that were sold when they were more than 100 years old. 
+
+4. We have found that the three neighborhoods NoRidge, NridgHt, and StoneBr have highest average sales among all the neighborhoods. It can be seen that the neighborhoods can be grouped into 3 classes. In further analysis we can define a new variable with these 3 classes for neighborhoods and see if it improves our results. 
+
+5. We have found that two zones account for highest average sales: Floating Village Residentials and Low Density Residentials, which is expected somehow based on their definition. 
+
+6. Lastly, we found that houses with 2 or more finished stories also lead to higher sale price on average. 
+
+We can now compare the two RMSEs. In the first model we had `r rmse1` and in the second model we had `r rmse2`.  As you can see the second model resulted in smaller rmse which indicates an improvement in the model. In our first model we used some numerical variables (OverallQual, GrLivArea, GarageCars, X1stFlrSF, YearBuilt, and YearRemodAdd). In the second model, a few additional informative variables (best_months, HighZone, HighStyle) were added to the previous ones..
+
+From this result it can be interpreted that how adding new informative variables can affect our final model and how accurate it predictions can actually be. 
+
+In our model we only used a small number of features. We can further improve our model by adding extra informative variables .But we need to be aware that there might occur some intercorrelations among them that need to be dealt with. Therefore we only need to add variables that are relevant and non-redundant. 
+
+## References
+
+1. <https://www.kaggle.com/code/tannercarbonati/detailed-data-analysis-ensemble-modeling>
+2. <https://r4ds.had.co.nz/exploratory-data-analysis.html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
